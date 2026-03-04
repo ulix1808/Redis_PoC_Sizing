@@ -105,9 +105,63 @@ sudo systemctl enable redis-server
 sudo systemctl start redis-server
 ```
 
-### 3.2 Configuración Básica de Sizing
+### 3.2 Red Hat / RHEL / Rocky Linux / AlmaLinux (RPM)
 
-Editar `/etc/redis/redis.conf`:
+En Red Hat Enterprise Linux (RHEL) 8/9, Rocky Linux y AlmaLinux puedes usar el repositorio oficial de Redis o los paquetes de la distribución.
+
+**Opción A: Repositorio oficial de Redis (recomendado, versión reciente)**
+
+```bash
+# Importar la clave GPG de Redis
+curl -fsSL https://packages.redis.io/gpg > /tmp/redis.key
+sudo rpm --import /tmp/redis.key
+
+# Crear el repositorio (elegir según versión)
+# Para RHEL 9 / Rocky Linux 9 / AlmaLinux 9:
+sudo tee /etc/yum.repos.d/redis.repo << 'EOF'
+[Redis]
+name=Redis
+baseurl=https://packages.redis.io/rpm/rockylinux9
+enabled=1
+gpgcheck=1
+EOF
+
+# Para RHEL 8 / Rocky Linux 8 / AlmaLinux 8:
+# baseurl=https://packages.redis.io/rpm/rockylinux8
+
+# Instalar Redis
+sudo dnf install -y redis
+# o: sudo yum install -y redis
+
+# Habilitar e iniciar el servicio (en RHEL el servicio se llama redis)
+sudo systemctl enable redis
+sudo systemctl start redis
+```
+
+**Opción B: Paquetes de la distribución (dnf/yum)**
+
+```bash
+sudo dnf install -y redis
+# o: sudo yum install -y redis
+
+sudo systemctl enable redis
+sudo systemctl start redis
+```
+
+**Firewall (si necesitas acceso remoto):**
+
+```bash
+sudo firewall-cmd --zone=public --permanent --add-port=6379/tcp
+# o por servicio, si está definido:
+# sudo firewall-cmd --zone=public --permanent --add-service=redis
+sudo firewall-cmd --reload
+```
+
+**Nota:** En RHEL/Rocky/AlmaLinux el servicio es `redis` (no `redis-server`) y el archivo de configuración suele estar en `/etc/redis.conf`.
+
+### 3.3 Configuración Básica de Sizing
+
+Editar `/etc/redis/redis.conf` (Debian/Ubuntu) o `/etc/redis.conf` (Red Hat):
 
 ```conf
 # Memoria máxima (ejemplo: 4GB)
@@ -129,10 +183,14 @@ appendfsync everysec
 Reiniciar el servicio:
 
 ```bash
+# Debian/Ubuntu
 sudo systemctl restart redis-server
+
+# Red Hat / RHEL / Rocky / AlmaLinux
+sudo systemctl restart redis
 ```
 
-### 3.3 Verificación
+### 3.4 Verificación
 
 ```bash
 redis-cli ping
