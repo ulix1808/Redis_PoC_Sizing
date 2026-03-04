@@ -414,6 +414,45 @@ BF.ADD filtro:emails "user@example.com"
 BF.EXISTS filtro:emails "user@example.com"
 ```
 
+### 5.6 Change Data Collector (Oracle → Redis)
+
+Sincronización incremental de un catálogo desde Oracle a Redis cada 30 segundos, actualizando **solo los registros que cambiaron** para no sobrecargar ni la base ni Redis.
+
+**Requisitos en Oracle:** La tabla debe tener una columna de auditoría de modificación (por ejemplo `UPDATED_AT` tipo `TIMESTAMP`), actualizada por trigger o por la aplicación al hacer INSERT/UPDATE.
+
+**Idea:** El script consulta en Oracle las filas donde `UPDATED_AT > última_sincronización`, serializa cada fila a JSON y la guarda en Redis con clave `catalog:NombreTabla:ID`. La fecha de la última sincronización se guarda en Redis para la siguiente pasada.
+
+**Script de ejemplo:** `scripts/oracle_redis_cdc.py`
+
+Dependencias:
+
+```bash
+pip install oracledb redis
+```
+
+Variables de entorno (o editar el script):
+
+| Variable | Descripción | Ejemplo |
+|----------|-------------|---------|
+| `ORACLE_DSN` | Conexión Oracle (host:puerto/servicio) | `localhost:1521/ORCLPDB1` |
+| `ORACLE_USER` / `ORACLE_PASSWORD` | Usuario Oracle | — |
+| `ORACLE_TABLE` | Nombre de la tabla catálogo | `MI_CATALOGO` |
+| `ORACLE_KEY_COLUMN` | Columna que identifica el registro (PK) | `ID` |
+| `ORACLE_CHANGE_COLUMN` | Columna de fecha de última modificación | `UPDATED_AT` |
+| `REDIS_HOST` / `REDIS_PORT` | Redis | `localhost`, `6379` |
+| `REDIS_PREFIX` | Prefijo de claves en Redis | `catalog` |
+| `CDC_INTERVAL_SECONDS` | Intervalo entre sincronizaciones (segundos) | `30` |
+
+Ejecución:
+
+```bash
+cd scripts
+export ORACLE_PASSWORD="tu_password"
+python oracle_redis_cdc.py
+```
+
+El script corre en bucle; cada 30 segundos consulta Oracle por filas con `UPDATED_AT > last_sync` y actualiza solo esas claves en Redis.
+
 ---
 
 ## 6. Verificación y Pruebas
