@@ -2,14 +2,19 @@
 """
 Change Data Collector: Oracle → Redis.
 Sincroniza cada 30 segundos solo los registros modificados desde Oracle a Redis.
-Requiere que la tabla Oracle tenga una columna de auditoría (ej. UPDATED_AT).
+Requiere que la tabla/vista tenga una columna de auditoría (ej. UPDATED_AT).
+
+Origen: una tabla, una vista o varias (configurar una instancia por fuente).
+Transformación: tipos Oracle (DATE, NUMBER, CLOB, NULL, etc.) → tipos serializables
+a JSON para Redis (fechas ISO string, números o string, null, etc.).
 Uso: pip install oracledb redis && python oracle_redis_cdc.py
 """
 
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, date
+from decimal import Decimal
 
 import oracledb
 import redis
@@ -29,6 +34,29 @@ INTERVAL_SECONDS = int(os.getenv("CDC_INTERVAL_SECONDS", "30"))
 
 # Clave en Redis donde guardamos la última fecha de sincronización
 LAST_SYNC_KEY = f"{REDIS_PREFIX}:{ORACLE_TABLE}:last_sync"
+
+
+def transform_value(v):
+    """
+    Convierte un valor Oracle a un tipo serializable en JSON para Redis.
+    Oracle: NUMBER, DATE, TIMESTAMP, VARCHAR2, CLOB, NULL, BLOB, Decimal...
+    Redis (valor JSON): string, number, null; fechas como string ISO.
+    """
+    if v is None:
+        return None
+    if isinstance(v, (datetime, date)):
+        return v.isoformat()
+    if isinstance(v, Decimal):
+        # Mantener como número si es "entero"; si no, float (o str para precisión exacta)
+        if v % 1 == 0:
+            return int(v)
+        return float(v)
+    if isinstance(v, bytes):
+        # BLOB/RAW: evitar en catálogos; si se usa, Base64
+        return v.hex()
+    if isinstance(v, (int, float, str, bool)):
+        return v
+    return str(v)
 
 
 def get_redis():
@@ -76,9 +104,10 @@ def run_sync():
 
     pipe = r.pipeline()
     for row in rows:
-        record = dict(zip(columns, (str(v) if v is not None else "" for v in row)))
+        # Transformar cada valor Oracle → tipo JSON (fechas ISO, null, decimal, etc.)
+        record = dict(zip(columns, [transform_value(v) for v in row]))
         key_id = record[ORACLE_KEY_COLUMN.upper()]
-        redis_key = f"{REDIS_PREFIX}:{ORACLE_TABLE}:{key_id}"
+        redis_key = f"{REDIS_PREFIX}:{ORACLE_TABLE}:{key_id if key_id is not None else ''}"
         pipe.set(redis_key, json.dumps(record, default=str))
     pipe.set(LAST_SYNC_KEY, now_ts)
     pipe.execute()

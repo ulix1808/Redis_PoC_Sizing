@@ -418,11 +418,48 @@ BF.EXISTS filtro:emails "user@example.com"
 
 Sincronización incremental de un catálogo desde Oracle a Redis cada 30 segundos, actualizando **solo los registros que cambiaron** para no sobrecargar ni la base ni Redis.
 
-**Requisitos en Oracle:** La tabla debe tener una columna de auditoría de modificación (por ejemplo `UPDATED_AT` tipo `TIMESTAMP`), actualizada por trigger o por la aplicación al hacer INSERT/UPDATE.
+#### Origen de los datos: tablas o vistas
 
-**Idea:** El script consulta en Oracle las filas donde `UPDATED_AT > última_sincronización`, serializa cada fila a JSON y la guarda en Redis con clave `catalog:NombreTabla:ID`. La fecha de la última sincronización se guarda en Redis para la siguiente pasada.
+Hay que definir **de dónde se lee** la información y **cómo se identifica** cada registro:
 
-**Script de ejemplo:** `scripts/oracle_redis_cdc.py`
+| Origen | Descripción | Consideraciones |
+|--------|-------------|-----------------|
+| **Una sola tabla** | `SELECT * FROM MI_CATALOGO WHERE UPDATED_AT > :last_sync` | La PK (ej. `ID`) define la clave en Redis. La tabla debe tener columna de auditoría (ej. `UPDATED_AT`). |
+| **Una vista** | `SELECT * FROM V_MI_CATALOGO WHERE ...` | La vista debe exponer una columna tipo “clave” (única por fila) y, si se quiere CDC incremental, una columna de fecha de modificación. Si la vista no tiene auditoría, se puede hacer carga completa cada vez (menos eficiente). |
+| **Varias tablas o vistas** | Varias consultas, cada una con su propia clave y opcionalmente su `last_sync` | Un script por fuente (o un mismo script con configuración por fuente). En Redis se distinguen con distinto prefijo, ej. `catalog:TablaA:ID`, `catalog:VistaB:CODIGO`. |
+| **JOIN de varias tablas** | Una vista o una consulta SQL que hace JOIN | Se trata como **una sola fuente**: una fila resultante = un documento en Redis. La “clave única” debe ser una columna (o concatenación) que identifique cada fila (ej. `ID` de la tabla maestra). |
+
+**Recomendación:** Para CDC incremental, que al menos una tabla base tenga columna de auditoría (`UPDATED_AT` / `MODIFIED_DATE`) actualizada por trigger o por la aplicación. Si solo hay vistas sin auditoría, usar carga completa en cada ciclo.
+
+#### Transformación para Redis (diferencias de tipo de dato)
+
+Redis guarda **strings** (o estructuras como hash/list). Si guardamos un “documento” por registro, lo normal es serializarlo en **JSON**. Oracle tiene tipos que JSON no tiene; hay que **transformar** antes de guardar:
+
+| Tipo Oracle | En Redis/JSON | Transformación recomendada |
+|-------------|---------------|----------------------------|
+| `NUMBER`, `INTEGER` | Número o string | Mantener como número en JSON si es entero/decimal “simple”; si puede ser muy grande o precisión crítica, guardar como string para evitar pérdida. |
+| `VARCHAR2`, `CHAR`, `CLOB` | String | Directo. CLOB muy grandes: considerar truncar o comprimir si no se necesitan completos en Redis. |
+| `DATE`, `TIMESTAMP` | String ISO 8601 | Convertir a `YYYY-MM-DDTHH:MM:SS.ffffff` (o sin fracción) para orden y compatibilidad. |
+| `TIMESTAMP WITH TIME ZONE` | String ISO con zona | Incluir zona (ej. `Z` o `+00:00`) para no perder información. |
+| `BLOB`, `RAW` | No estándar en JSON | Evitar en cache de catálogo; si hace falta, guardar como Base64 (string) o referenciar por ID y no sincronizar el contenido. |
+| `NULL` | `null` en JSON | No guardar string vacío; usar `null` para que el consumidor distinga “no definido”. |
+| `FLOAT`, `BINARY_FLOAT/DOUBLE` | Número | Directo; vigilar NaN/Infinity (no válidos en JSON estándar, convertirlos a `null` o string). |
+
+**Reglas prácticas:**
+
+1. **Un registro = un valor en Redis:** clave `prefix:origen:id` (ej. `catalog:MI_CATALOGO:123`), valor = JSON del registro ya transformado.
+2. **Fechas siempre como string** en JSON (ISO) para evitar diferencias de zona y de precisión entre lenguajes.
+3. **Nulos:** dejar como `null` en JSON; en el script no mapear `NULL` de Oracle a `""` si quieres distinguir “no definido”.
+4. **Números muy grandes o precisión exacta:** serializar como string para que no se redondee en JSON.
+5. **Varias fuentes:** cada una con su prefijo y, si aplica, su propia `last_sync` en Redis (ej. `catalog:Tabla1:last_sync`, `catalog:Vista2:last_sync`).
+
+Con esto se entiende **cómo se saca** la información (una o varias tablas/vistas, una o varias consultas) y **cómo se transforma** para guardarla en Redis sin problemas de tipo de dato.
+
+**Requisitos en Oracle:** La tabla (o vista base) debe tener una columna de auditoría de modificación (por ejemplo `UPDATED_AT` tipo `TIMESTAMP`), actualizada por trigger o por la aplicación al hacer INSERT/UPDATE.
+
+**Idea del script:** Consulta en Oracle las filas donde `UPDATED_AT > última_sincronización`, transforma cada fila (tipos Oracle → tipos JSON), serializa a JSON y guarda en Redis con clave `catalog:NombreTabla:ID`. La fecha de la última sincronización se guarda en Redis para la siguiente pasada.
+
+**Script de ejemplo:** `scripts/oracle_redis_cdc.py` — aplica la transformación de tipos descrita arriba en la función `transform_value()` (fechas a ISO, `Decimal` a int/float, `NULL` a `null`, etc.).
 
 Dependencias:
 
